@@ -1,16 +1,28 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-
+import (
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"strconv"
+)
 
 type Master struct {
 	// Your definitions here.
-
+	mapFiles      []string
+	mapP          int
+	reduceFiles   []string
+	reduceWorkers int
+	finished      int
+	done          bool
 }
+
+var suffix int
+var mapPrefix string = "maped-"
+var reducePrefix string = "mr-out-"
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -19,11 +31,40 @@ type Master struct {
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (m *Master) Assign(args *Args, reply *Reply) error {
+	if args != nil && !args.success {
+		fmt.Println("task", args.task, args.file, "fail")
+		return nil
+	}
+
+	if args != nil && args.success && args.task == 0 {
+		m.reduceFiles = append(m.reduceFiles, args.file)
+	} else if args != nil && args.success && args.task == 1 {
+		m.finished++
+	}
+	args = &Args{}
+
+	if m.finished != 0 && m.finished == workerNum {
+		m.done = true
+		reply.done = true
+		return nil
+	}
+
+	if m.mapP < len(m.mapFiles) {
+		reply.task = 0
+		reply.fromPath = m.mapFiles[m.mapP]
+		reply.toPath = mapPrefix + strconv.Itoa(suffix)
+		m.mapP++
+	} else if len(m.reduceFiles) == len(m.mapFiles) && m.reduceWorkers < workerNum {
+		reply.task = 1
+		reply.fromReducePath = m.reduceFiles
+		reply.reduceWorkerIndex = m.reduceWorkers
+		m.reduceWorkers++
+	}
+
+	// reply.Y = args.X + 1
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -46,12 +87,8 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
 	// Your code here.
-
-
-	return ret
+	return m.done
 }
 
 //
@@ -63,7 +100,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-
+	m.mapFiles = files
 
 	m.server()
 	return &m
