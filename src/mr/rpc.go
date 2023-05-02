@@ -17,20 +17,24 @@ import (
 //
 
 type Args struct {
-	success bool
-	task    int
-	file    string
+	Processing bool
+	Success    bool
+	Task       int
+	Index      int
+	File       string
 }
 
 type Reply struct {
 	//0 map
 	//1 reduce
-	task              int
-	fromPath          string
-	toPath            string
-	fromReducePath    []string
-	reduceWorkerIndex int
-	done              bool
+	Task              int
+	Index             int
+	FromPath          string
+	ToPath            string
+	FromReducePath    []string
+	ReduceWorkerIndex int
+	NReduce           int
+	Done              bool
 }
 
 // Add your RPC definitions here.

@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -29,8 +28,6 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
-var workerNum = 4
-
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -38,34 +35,35 @@ var workerNum = 4
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	return int(h.Sum32()&0x7fffffff) % workerNum
+	return int(h.Sum32() & 0x7fffffff)
 }
+
+// declare an argument structure.
+var args = Args{}
+
+// declare a reply structure.
+var reply = Reply{}
 
 //
 // main/mrworker.go calls this function.
 //
-func Worker(mapf func(string, string) []KeyValue,
+func Worker(client *rpc.Client, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
-	// Your worker implementation here.
-
-	// declare an argument structure.
-	args := Args{}
-
-	// fill in the argument(s).
-	// args.X = 99
-
-	// declare a reply structure.
-	reply := Reply{}
-
+	args.Success = true
+	args.Task = -1
 	for {
 		// send the RPC request, wait for the reply.
-		done, err := CallServer(mapf, reducef, &args, &reply)
+		done, err := CallServer(client, mapf, reducef, &args, &reply)
 		if done {
 			break
 		}
 		if err != nil {
 			log.Fatalf("get fatal")
+			break
+		}
+		//if map task has not been finishen,sleep for one second
+		if &reply == nil {
+			time.Sleep(time.Second)
 		}
 	}
 }
@@ -73,24 +71,29 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallServer(mapf func(string, string) []KeyValue,
+func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string, args *Args, reply *Reply) (bool, error) {
 
+	log.Println("args ", args)
 	// send the RPC request, wait for the reply.
-	call("Master.Assign", &args, &reply)
-
+	result := client.Call("Master.Assign", &args, &reply)
+	if result != nil {
+		log.Fatal(result)
+	}
 	//map operation has not been finished
 	if reply == nil {
 		time.Sleep(time.Second)
+		fmt.Println("empty reply")
 		return false, nil
 	}
+	log.Println("reply:", reply)
 
-	if reply.done {
+	if reply.Done {
 		return true, nil
 	}
 
-	task := reply.task
-	filename := reply.fromPath
+	task := reply.Task
+	filename := reply.FromPath
 	if task == 0 {
 		//map
 		file, err := os.Open(filename)
@@ -105,10 +108,15 @@ func CallServer(mapf func(string, string) []KeyValue,
 		kva := mapf(filename, string(content))
 		sort.Sort(ByKey(kva))
 
-		newFile, err := os.Create(reply.toPath)
+		err = os.Remove(reply.ToPath)
+		if err != nil {
+			log.Println(err)
+		}
+
+		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
 			fmt.Println("file create fail")
-			args.success = false
+			args.Success = false
 			return false, err
 		}
 
@@ -126,7 +134,7 @@ func CallServer(mapf func(string, string) []KeyValue,
 			output := reducef(kva[i].Key, values)
 			kva[i].Value = output
 			err := enc.Encode(&kva[i])
-			if err == nil {
+			if err != nil {
 				log.Fatalf("map kv error %v %v %v", filename, kva[i].Key, kva[i].Value)
 			}
 
@@ -134,48 +142,49 @@ func CallServer(mapf func(string, string) []KeyValue,
 		}
 		newFile.Close()
 
+		args = &Args{}
+		args.Processing = true
+		args.Index = reply.Index
+		args.Success = true
+		args.File = reply.ToPath
+		args.Task = 0
+		log.Printf("map success index: %d filename: %v topath: %v", reply.Index, filename, reply.ToPath)
+		log.Println("map success args: ", args)
 		reply = &Reply{}
-		args.success = true
-		args.file = reply.toPath
-		args.task = 0
+		result := client.Call("Master.Response", &args, &reply)
+		if result != nil {
+			log.Fatal(result)
+		}
+		args = &Args{}
 		return false, err
 	} else {
 		// reduce
-		workIndex := reply.reduceWorkerIndex
+		workIndex := reply.ReduceWorkerIndex
 		intermediate := []KeyValue{}
-		for _, filename := range reply.fromReducePath {
+		for _, filename := range reply.FromReducePath {
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
 			}
-			content, err := ioutil.ReadAll(file)
-			if err != nil {
-				log.Fatalf("cannot read %v", filename)
-			}
-			file.Close()
-			// function to detect word separators.
-			ff := func(r rune) bool { return r == '\n' }
-
-			// split contents into an array of words.
-			words := strings.FieldsFunc(string(content), ff)
-			for _, w := range words {
-				kv := KeyValue{}
-				s := strings.Split(w, " ")
-				if ihash(s[0]) == workIndex {
-					kv.Key = s[0]
-					kv.Value = s[1]
+			dec := json.NewDecoder(file)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				if ihash(kv.Key)%reply.NReduce == workIndex {
 					intermediate = append(intermediate, kv)
 				}
 			}
+			file.Close()
 		}
 
 		sort.Sort(ByKey(intermediate))
-
-		newFile, err := os.Create(reply.toPath)
+		os.Remove(reply.ToPath)
+		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
 			fmt.Println("file create fail")
-			args.success = false
-
+			args.Success = false
 			return false, err
 		}
 		i := 0
@@ -195,9 +204,18 @@ func CallServer(mapf func(string, string) []KeyValue,
 			i = j
 		}
 		newFile.Close()
+		args = &Args{}
+		args.Processing = true
+		args.Index = reply.ReduceWorkerIndex
+		args.Success = true
+		args.Task = 1
+		log.Printf("reduce success index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
+		log.Println("reduce success args: ", args)
 		reply = &Reply{}
-		args.success = true
-		args.task = 1
+		result := client.Call("Master.Response", &args, &reply)
+		if result != nil {
+			log.Fatal(result)
+		}
 		return false, err
 	}
 }

@@ -47,7 +47,7 @@ func Reduce(key string, values []string) string {
 	var sum int = 0
 	for _, n := range values {
 		t, err := strconv.Atoi(n)
-		if err == nil {
+		if err != nil {
 			log.Fatal("atoi error:", err)
 		}
 		sum += t
