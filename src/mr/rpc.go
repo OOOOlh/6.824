@@ -35,6 +35,7 @@ type Reply struct {
 	ReduceWorkerIndex int
 	NReduce           int
 	Done              bool
+	Exit              bool
 }
 
 // Add your RPC definitions here.

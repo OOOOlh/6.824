@@ -58,7 +58,7 @@ func Worker(client *rpc.Client, mapf func(string, string) []KeyValue,
 			break
 		}
 		if err != nil {
-			log.Fatalf("get fatal")
+			log.Fatalf("Worker+: get fatal")
 			break
 		}
 		//if map task has not been finishen,sleep for one second
@@ -74,19 +74,19 @@ func Worker(client *rpc.Client, mapf func(string, string) []KeyValue,
 func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string, args *Args, reply *Reply) (bool, error) {
 
-	log.Println("args ", args)
+	// log.Println("Worker: args ", args)
 	// send the RPC request, wait for the reply.
 	result := client.Call("Master.Assign", &args, &reply)
 	if result != nil {
 		log.Fatal(result)
 	}
 	//map operation has not been finished
-	if reply == nil {
+	if reply.Exit {
 		time.Sleep(time.Second)
-		fmt.Println("empty reply")
+		fmt.Println("Worker+: empty reply")
 		return false, nil
 	}
-	log.Println("reply:", reply)
+	// log.Println("Worker: reply:", reply)
 
 	if reply.Done {
 		return true, nil
@@ -98,11 +98,11 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		//map
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", filename)
+			log.Fatalf("Worker+: cannot open %v", filename)
 		}
 		content, err := ioutil.ReadAll(file)
 		if err != nil {
-			log.Fatalf("cannot read %v", filename)
+			log.Fatalf("Worker+: cannot read %v", filename)
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
@@ -115,31 +115,42 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 
 		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
-			fmt.Println("file create fail")
+			log.Println("Worker+: file create fail")
 			args.Success = false
 			return false, err
 		}
 
 		enc := json.NewEncoder(newFile)
-		i := 0
-		for i < len(kva) {
-			j := i + 1
-			for j < len(kva) && kva[j].Key == kva[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, kva[k].Value)
-			}
-			output := reducef(kva[i].Key, values)
-			kva[i].Value = output
+		if err != nil {
+			log.Fatalf("Worker+: json encoder error %v", filename)
+		}
+
+		for i := 0; i < len(kva); i++ {
 			err := enc.Encode(&kva[i])
 			if err != nil {
-				log.Fatalf("map kv error %v %v %v", filename, kva[i].Key, kva[i].Value)
+				log.Fatalf("Worker+: map kv error %v %v %v", filename, kva[i].Key, kva[i].Value)
 			}
-
-			i = j
 		}
+		// i := 0
+		// for i < len(kva) {
+		// 	// j := i + 1
+		// 	// for j < len(kva) && kva[j].Key == kva[i].Key {
+		// 	// 	j++
+		// 	// }
+		// 	// values := []string{}
+		// 	// for k := i; k < j; k++ {
+		// 	// 	values = append(values, kva[k].Value)
+		// 	// }
+		// 	// output := reducef(kva[i].Key, values)
+		// 	// fmt.Println("output", output)
+		// 	// kva[i].Value = output
+		// 	err := enc.Encode(&kva[i])
+		// 	if err != nil {
+		// 		log.Fatalf("Worker+: map kv error %v %v %v", filename, kva[i].Key, kva[i].Value)
+		// 	}
+
+		// 	i = j
+		// }
 		newFile.Close()
 
 		args = &Args{}
@@ -148,8 +159,8 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		args.Success = true
 		args.File = reply.ToPath
 		args.Task = 0
-		log.Printf("map success index: %d filename: %v topath: %v", reply.Index, filename, reply.ToPath)
-		log.Println("map success args: ", args)
+		log.Printf("Worker+: map success index: %d filename: %v topath: %v", reply.Index, filename, reply.ToPath)
+		log.Println("Worker+: map success args: ", args)
 		reply = &Reply{}
 		result := client.Call("Master.Response", &args, &reply)
 		if result != nil {
@@ -164,7 +175,7 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		for _, filename := range reply.FromReducePath {
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("cannot open %v", filename)
+				log.Fatalf("Worker+: cannot open %v", filename)
 			}
 			dec := json.NewDecoder(file)
 			for {
@@ -183,7 +194,7 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		os.Remove(reply.ToPath)
 		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
-			fmt.Println("file create fail")
+			fmt.Println("Worker+: file create fail")
 			args.Success = false
 			return false, err
 		}
@@ -198,7 +209,6 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 				values = append(values, intermediate[k].Value)
 			}
 			output := reducef(intermediate[i].Key, values)
-
 			// this is the correct format for each line of Reduce output.
 			fmt.Fprintf(newFile, "%v %v\n", intermediate[i].Key, output)
 			i = j
@@ -209,8 +219,8 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		args.Index = reply.ReduceWorkerIndex
 		args.Success = true
 		args.Task = 1
-		log.Printf("reduce success index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
-		log.Println("reduce success args: ", args)
+		log.Printf("Worker+: reduce success index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
+		log.Println("Worker+: reduce success args: ", args)
 		reply = &Reply{}
 		result := client.Call("Master.Response", &args, &reply)
 		if result != nil {

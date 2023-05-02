@@ -28,6 +28,7 @@ func main() {
 	for m.Done() == false {
 		time.Sleep(time.Second)
 	}
+	log.Println("master finish tasks, shutdown")
 
 	time.Sleep(time.Second)
 }
