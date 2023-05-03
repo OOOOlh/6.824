@@ -58,7 +58,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 		if err != nil {
-			log.Fatalf("Worker+: get fatal")
+			log.Fatalf("Worker: get fatal")
 			break
 		}
 		//if map task has not been finishen,sleep for one second
@@ -84,7 +84,7 @@ func CallServer(mapf func(string, string) []KeyValue,
 	//map operation has not been finished
 	if reply.Exit {
 		time.Sleep(time.Second)
-		log.Println("Worker+: empty reply")
+		log.Println("Worker: empty reply")
 		return false, nil
 	}
 	// log.Println("Worker: reply:", reply)
@@ -99,11 +99,11 @@ func CallServer(mapf func(string, string) []KeyValue,
 		//map
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("Worker+: cannot open %v", filename)
+			log.Fatalf("Worker: cannot open %s", filename)
 		}
 		content, err := ioutil.ReadAll(file)
 		if err != nil {
-			log.Fatalf("Worker+: cannot read %v", filename)
+			log.Fatalf("Worker: cannot read %s", filename)
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
@@ -116,20 +116,20 @@ func CallServer(mapf func(string, string) []KeyValue,
 
 		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
-			log.Println("Worker+: file create fail")
+			log.Println("Worker: file create fail")
 			args.Success = false
 			return false, err
 		}
 
 		enc := json.NewEncoder(newFile)
 		if err != nil {
-			log.Fatalf("Worker+: json encoder error %v", filename)
+			log.Fatalf("Worker: json encoder error %s", filename)
 		}
 
 		for i := 0; i < len(kva); i++ {
 			err := enc.Encode(&kva[i])
 			if err != nil {
-				log.Fatalf("Worker+: map kv error %v %v %v", filename, kva[i].Key, kva[i].Value)
+				log.Fatalf("Worker: map kv error %s %s %s", filename, kva[i].Key, kva[i].Value)
 			}
 		}
 		// i := 0
@@ -160,8 +160,8 @@ func CallServer(mapf func(string, string) []KeyValue,
 		args.Success = true
 		args.File = reply.ToPath
 		args.Task = 0
-		log.Printf("Worker+: map success index: %d filename: %v topath: %v", reply.Index, filename, reply.ToPath)
-		log.Println("Worker+: map success args: ", args)
+		log.Printf("Worker: map success index: %d filename: %s topath: %s", reply.Index, filename, reply.ToPath)
+		log.Println("Worker: map success args: ", args)
 		reply = &Reply{}
 		result := call("Master.Response", &args, &reply)
 		if !result {
@@ -170,14 +170,14 @@ func CallServer(mapf func(string, string) []KeyValue,
 		args = &Args{}
 		return false, err
 	} else {
-		log.Printf("Worker+: reduce task index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
+		log.Printf("Worker: reduce task index: %d topath: %s", reply.ReduceWorkerIndex, reply.ToPath)
 		// reduce
 		workIndex := reply.ReduceWorkerIndex
 		intermediate := []KeyValue{}
 		for _, filename := range reply.FromReducePath {
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("Worker+: cannot open %v", filename)
+				log.Fatalf("Worker: cannot open %s", filename)
 			}
 			dec := json.NewDecoder(file)
 			for {
@@ -196,7 +196,7 @@ func CallServer(mapf func(string, string) []KeyValue,
 		os.Remove(reply.ToPath)
 		newFile, err := os.Create(reply.ToPath)
 		if err != nil {
-			fmt.Println("Worker+: file create fail")
+			fmt.Println("Worker: file create fail")
 			args.Success = false
 			return false, err
 		}
@@ -221,8 +221,8 @@ func CallServer(mapf func(string, string) []KeyValue,
 		args.Index = reply.ReduceWorkerIndex
 		args.Success = true
 		args.Task = 1
-		log.Printf("Worker+: reduce success index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
-		log.Println("Worker+: reduce success args: ", args)
+		log.Printf("Worker: reduce success index: %d topath: %s", reply.ReduceWorkerIndex, reply.ToPath)
+		log.Println("Worker: reduce success args: ", args)
 		reply = &Reply{}
 		result := call("Master.Response", &args, &reply)
 		if !result {

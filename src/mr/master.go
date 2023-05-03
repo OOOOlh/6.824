@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -42,10 +41,10 @@ var reducePrefix string = "mr-out-"
 //
 
 func (m *Master) Response(args *Args, reply *Reply) error {
-	log.Println("Master-: receive worker response")
+	log.Println("Master--: receive worker response")
 	//fail
 	if !args.Success {
-		fmt.Println("Master-: task", args.Task, args.File, "fail")
+		log.Printf("Master--: task %d %s fail", args.Task, args.File)
 		return nil
 	}
 
@@ -60,7 +59,7 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 		m.mu.Unlock()
 		//stop the goroutine
 		m.mapChan[args.Index] <- 1
-		log.Printf("Master-: ready to stop the map gouroutine %d", args.Index)
+		log.Printf("Master--: ready to stop the map gouroutine %d", args.Index)
 		return nil
 	} else if args.Success && args.Task == 1 && args.Processing {
 		m.mu.Lock()
@@ -71,7 +70,7 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 		m.finished++
 		m.mu.Unlock()
 		m.reduceChan[args.Index] <- 1
-		log.Printf("Master-: ready to stop the reduce gouroutine %d", args.Index)
+		log.Printf("Master--: ready to stop the reduce gouroutine %d", args.Index)
 	}
 	if m.finished == m.nReduce && args.Processing {
 		m.done = true
@@ -83,14 +82,13 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 }
 
 func (m *Master) Assign(args *Args, reply *Reply) error {
-	log.Println("Master-: receive task request")
+	log.Println("Master--: receive task request")
 	if m.mapP < len(m.mapFiles) {
 		m.mu.Lock()
 		if m.mapP == len(m.mapFiles) {
 			reply.Exit = true
 			return nil
 		}
-		log.Println("-----------map", m.mapP)
 		workerMapP := m.mapP
 		m.processingMap[workerMapP] = true
 		m.mapP++
@@ -100,7 +98,7 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 		reply.FromPath = m.mapFiles[workerMapP]
 		reply.ToPath = mapPrefix + strconv.Itoa(workerMapP)
 		reply.NReduce = m.nReduce
-		log.Printf("Master-: map task %d %v %v", reply.Index, reply.FromPath, reply.ToPath)
+		log.Printf("Master--: map task %d %s %s", reply.Index, reply.FromPath, reply.ToPath)
 		//a timer task for every map
 		go func(mapP int) {
 			myTimer := time.NewTimer(time.Second * 10)
@@ -110,13 +108,13 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 				m.failedMap = append(m.failedMap, mapP)
 				delete(m.processingMap, mapP)
 				m.mu.Unlock()
-				log.Printf("Master-: map %d fail", mapP)
+				log.Printf("Master--: map %d fail", mapP)
 				break
 			case <-m.mapChan[mapP]:
 				m.mu.Lock()
 				delete(m.processingMap, mapP)
 				m.mu.Unlock()
-				log.Printf("Master-: map %d success", mapP)
+				log.Printf("Master--: map %d success", mapP)
 				break
 			}
 			myTimer.Stop()
@@ -136,7 +134,7 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 		reply.FromPath = m.mapFiles[failedIndex]
 		reply.ToPath = mapPrefix + strconv.Itoa(failedIndex)
 		reply.NReduce = m.nReduce
-		log.Printf("Master-: retry failed map task %d %v %v", reply.Index, reply.FromPath, reply.ToPath)
+		log.Printf("Master--: retry failed map task %d %s %s", reply.Index, reply.FromPath, reply.ToPath)
 		//a timer task for every map
 		go func(mapP int) {
 			myTimer := time.NewTimer(time.Second * 10)
@@ -146,13 +144,13 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 				m.failedMap = append(m.failedMap, mapP)
 				delete(m.processingMap, mapP)
 				m.mu.Unlock()
-				log.Printf("Master-: reduce %d fail", mapP)
+				log.Printf("Master--: reduce %d fail", mapP)
 				break
 			case <-m.mapChan[mapP]:
 				m.mu.Lock()
 				delete(m.processingMap, mapP)
 				m.mu.Unlock()
-				log.Printf("Master-: map %d success", mapP)
+				log.Printf("Master--: map %d success", mapP)
 				break
 			}
 			myTimer.Stop()
@@ -164,7 +162,6 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			reply.Exit = true
 			return nil
 		}
-		log.Println("+++++++++++++++++++++++++++++", m.reduceWorkers)
 		reply.ReduceWorkerIndex = m.reduceWorkers
 		m.processingReduce[reply.ReduceWorkerIndex] = true
 		m.reduceWorkers++
@@ -172,7 +169,7 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 		reply.FromReducePath = m.reduceFiles
 		reply.ToPath = reducePrefix + strconv.Itoa(reply.ReduceWorkerIndex)
 		reply.NReduce = m.nReduce
-		log.Printf("Master-: reduce task %v %d", reply.FromReducePath, reply.ReduceWorkerIndex)
+		log.Printf("Master--: reduce task %s %d", reply.FromReducePath, reply.ReduceWorkerIndex)
 
 		go func(reduceIndex int) {
 			myTimer := time.NewTimer(time.Second * 10)
@@ -182,13 +179,13 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 				m.failedReduce = append(m.failedReduce, reduceIndex)
 				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
-				log.Printf("Master-: reduce %d fail", reduceIndex)
+				log.Printf("Master--: reduce %d fail", reduceIndex)
 				break
 			case <-m.reduceChan[reduceIndex]:
 				m.mu.Lock()
 				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
-				log.Printf("Master-: reduce %d success", reduceIndex)
+				log.Printf("Master--: reduce %d success", reduceIndex)
 				break
 			}
 			myTimer.Stop()
@@ -208,7 +205,7 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 		reply.ReduceWorkerIndex = reduceIndex
 		reply.ToPath = reducePrefix + strconv.Itoa(reduceIndex)
 		reply.NReduce = m.nReduce
-		log.Printf("Master-: reduce task %v %d", reply.FromReducePath, reply.ReduceWorkerIndex)
+		log.Printf("Master--: reduce task %s %d", reply.FromReducePath, reply.ReduceWorkerIndex)
 		go func(reduceIndex int) {
 			myTimer := time.NewTimer(time.Second * 10)
 			select {
@@ -217,13 +214,13 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 				m.failedReduce = append(m.failedReduce, reduceIndex)
 				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
-				log.Printf("Master-: reduce %d fail", reduceIndex)
+				log.Printf("Master--: reduce %d fail", reduceIndex)
 				break
 			case <-m.reduceChan[reduceIndex]:
 				m.mu.Lock()
 				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
-				log.Printf("Master-: reduce %d success", reduceIndex)
+				log.Printf("Master--: reduce %d success", reduceIndex)
 				break
 			}
 
@@ -270,7 +267,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// Your code here.
 	m.mapFiles = files
-	log.Printf("Master: file nums: %d", len(files))
+	log.Printf("Master--: file nums: %d", len(files))
 	m.mapChan = make([]chan int, len(files))
 	for i := 0; i < len(files); i++ {
 		m.mapChan[i] = make(chan int, 1)
