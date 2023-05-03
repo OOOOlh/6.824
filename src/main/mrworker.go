@@ -13,7 +13,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/rpc"
 	"os"
 	"plugin"
 
@@ -27,12 +26,12 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-	client, err := rpc.DialHTTP("tcp", "localhost:8888")
-	if err != nil {
-		log.Fatal("dialing:", err)
-	}
+	// client, err := rpc.DialHTTP("tcp", "localhost:8888")
+	// if err != nil {
+	// 	log.Fatal("dialing:", err)
+	// }
 
-	mr.Worker(client, mapf, reducef)
+	mr.Worker(mapf, reducef)
 }
 
 //

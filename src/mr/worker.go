@@ -47,13 +47,13 @@ var reply = Reply{}
 //
 // main/mrworker.go calls this function.
 //
-func Worker(client *rpc.Client, mapf func(string, string) []KeyValue,
+func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	args.Success = true
 	args.Task = -1
 	for {
 		// send the RPC request, wait for the reply.
-		done, err := CallServer(client, mapf, reducef, &args, &reply)
+		done, err := CallServer(mapf, reducef, &args, &reply)
 		if done {
 			break
 		}
@@ -71,19 +71,20 @@ func Worker(client *rpc.Client, mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
+func CallServer(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string, args *Args, reply *Reply) (bool, error) {
 
 	// log.Println("Worker: args ", args)
 	// send the RPC request, wait for the reply.
-	result := client.Call("Master.Assign", &args, &reply)
-	if result != nil {
-		log.Fatal(result)
+	reply = &Reply{}
+	result := call("Master.Assign", &args, &reply)
+	if !result {
+		log.Fatal("Worker: connect error")
 	}
 	//map operation has not been finished
 	if reply.Exit {
 		time.Sleep(time.Second)
-		fmt.Println("Worker+: empty reply")
+		log.Println("Worker+: empty reply")
 		return false, nil
 	}
 	// log.Println("Worker: reply:", reply)
@@ -162,13 +163,14 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		log.Printf("Worker+: map success index: %d filename: %v topath: %v", reply.Index, filename, reply.ToPath)
 		log.Println("Worker+: map success args: ", args)
 		reply = &Reply{}
-		result := client.Call("Master.Response", &args, &reply)
-		if result != nil {
-			log.Fatal(result)
+		result := call("Master.Response", &args, &reply)
+		if !result {
+			log.Fatal("Worker: map response error")
 		}
 		args = &Args{}
 		return false, err
 	} else {
+		log.Printf("Worker+: reduce task index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
 		// reduce
 		workIndex := reply.ReduceWorkerIndex
 		intermediate := []KeyValue{}
@@ -222,9 +224,9 @@ func CallServer(client *rpc.Client, mapf func(string, string) []KeyValue,
 		log.Printf("Worker+: reduce success index: %d topath: %v", reply.ReduceWorkerIndex, reply.ToPath)
 		log.Println("Worker+: reduce success args: ", args)
 		reply = &Reply{}
-		result := client.Call("Master.Response", &args, &reply)
-		if result != nil {
-			log.Fatal(result)
+		result := call("Master.Response", &args, &reply)
+		if !result {
+			log.Fatal("Worker: reduce response error")
 		}
 		return false, err
 	}

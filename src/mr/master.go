@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -13,18 +14,20 @@ import (
 
 type Master struct {
 	// Your definitions here.
-	mapFiles      []string
-	mapP          int
-	reduceFiles   []string
-	nReduce       int
-	reduceWorkers int
-	finished      int
-	done          bool
-	mapChan       []chan int
-	reduceChan    []chan int
-	failedMap     []int
-	failedReduce  []int
-	mu            sync.Mutex
+	mapFiles         []string
+	mapP             int
+	reduceFiles      []string
+	nReduce          int
+	reduceWorkers    int
+	finished         int
+	done             bool
+	mapChan          []chan int
+	reduceChan       []chan int
+	failedMap        []int
+	failedReduce     []int
+	processingMap    map[int]bool
+	processingReduce map[int]bool
+	mu               sync.Mutex
 }
 
 var mapPrefix string = "maped-"
@@ -40,7 +43,6 @@ var reducePrefix string = "mr-out-"
 
 func (m *Master) Response(args *Args, reply *Reply) error {
 	log.Println("Master-: receive worker response")
-	// log.Println("Master: recieved args ", args)
 	//fail
 	if !args.Success {
 		fmt.Println("Master-: task", args.Task, args.File, "fail")
@@ -50,6 +52,10 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 	//success
 	if args.Success && args.Task == 0 && args.Processing {
 		m.mu.Lock()
+		_, ok := m.processingMap[args.Index]
+		if !ok {
+			return nil
+		}
 		m.reduceFiles = append(m.reduceFiles, args.File)
 		m.mu.Unlock()
 		//stop the goroutine
@@ -58,12 +64,15 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 		return nil
 	} else if args.Success && args.Task == 1 && args.Processing {
 		m.mu.Lock()
+		_, ok := m.processingReduce[args.Index]
+		if !ok {
+			return nil
+		}
 		m.finished++
 		m.mu.Unlock()
 		m.reduceChan[args.Index] <- 1
 		log.Printf("Master-: ready to stop the reduce gouroutine %d", args.Index)
 	}
-	log.Println(m.finished, m.nReduce)
 	if m.finished == m.nReduce && args.Processing {
 		m.done = true
 		reply.Done = true
@@ -75,15 +84,15 @@ func (m *Master) Response(args *Args, reply *Reply) error {
 
 func (m *Master) Assign(args *Args, reply *Reply) error {
 	log.Println("Master-: receive task request")
-
 	if m.mapP < len(m.mapFiles) {
 		m.mu.Lock()
 		if m.mapP == len(m.mapFiles) {
 			reply.Exit = true
 			return nil
 		}
-		log.Println("-----------", m.mapP)
+		log.Println("-----------map", m.mapP)
 		workerMapP := m.mapP
+		m.processingMap[workerMapP] = true
 		m.mapP++
 		m.mu.Unlock()
 		reply.Task = 0
@@ -99,16 +108,19 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			case <-myTimer.C:
 				m.mu.Lock()
 				m.failedMap = append(m.failedMap, mapP)
+				delete(m.processingMap, mapP)
 				m.mu.Unlock()
 				log.Printf("Master-: map %d fail", mapP)
 				break
 			case <-m.mapChan[mapP]:
+				m.mu.Lock()
+				delete(m.processingMap, mapP)
+				m.mu.Unlock()
 				log.Printf("Master-: map %d success", mapP)
 				break
 			}
 			myTimer.Stop()
 		}(workerMapP)
-
 	} else if len(m.failedMap) > 0 {
 		reply.Task = 0
 		m.mu.Lock()
@@ -117,13 +129,12 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			return nil
 		}
 		failedIndex := m.failedMap[0]
-		if len(m.failedMap) > 1 {
-			m.failedMap = m.failedMap[1:]
-		}
+		m.failedMap = m.failedMap[1:]
+		m.processingMap[failedIndex] = true
 		m.mu.Unlock()
 		reply.Index = failedIndex
 		reply.FromPath = m.mapFiles[failedIndex]
-		reply.ToPath = mapPrefix + strconv.Itoa(m.mapP)
+		reply.ToPath = mapPrefix + strconv.Itoa(failedIndex)
 		reply.NReduce = m.nReduce
 		log.Printf("Master-: retry failed map task %d %v %v", reply.Index, reply.FromPath, reply.ToPath)
 		//a timer task for every map
@@ -133,10 +144,14 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			case <-myTimer.C:
 				m.mu.Lock()
 				m.failedMap = append(m.failedMap, mapP)
+				delete(m.processingMap, mapP)
 				m.mu.Unlock()
 				log.Printf("Master-: reduce %d fail", mapP)
 				break
 			case <-m.mapChan[mapP]:
+				m.mu.Lock()
+				delete(m.processingMap, mapP)
+				m.mu.Unlock()
 				log.Printf("Master-: map %d success", mapP)
 				break
 			}
@@ -151,6 +166,7 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 		}
 		log.Println("+++++++++++++++++++++++++++++", m.reduceWorkers)
 		reply.ReduceWorkerIndex = m.reduceWorkers
+		m.processingReduce[reply.ReduceWorkerIndex] = true
 		m.reduceWorkers++
 		m.mu.Unlock()
 		reply.FromReducePath = m.reduceFiles
@@ -164,28 +180,30 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			case <-myTimer.C:
 				m.mu.Lock()
 				m.failedReduce = append(m.failedReduce, reduceIndex)
+				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
 				log.Printf("Master-: reduce %d fail", reduceIndex)
 				break
 			case <-m.reduceChan[reduceIndex]:
+				m.mu.Lock()
+				delete(m.processingReduce, reduceIndex)
+				m.mu.Unlock()
 				log.Printf("Master-: reduce %d success", reduceIndex)
 				break
 			}
 			myTimer.Stop()
 		}(reply.ReduceWorkerIndex)
-
 	} else if len(m.failedReduce) > 0 {
 		reply.Task = 1
 		reply.FromReducePath = m.reduceFiles
 		m.mu.Lock()
-		if len(m.failedReduce) > 0 {
+		if len(m.failedReduce) == 0 {
 			reply.Exit = true
 			return nil
 		}
 		reduceIndex := m.failedReduce[0]
-		if len(m.failedReduce) > 0 {
-			m.failedReduce = m.failedReduce[1:]
-		}
+		m.failedReduce = m.failedReduce[1:]
+		m.processingReduce[reduceIndex] = true
 		m.mu.Unlock()
 		reply.ReduceWorkerIndex = reduceIndex
 		reply.ToPath = reducePrefix + strconv.Itoa(reduceIndex)
@@ -197,10 +215,14 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 			case <-myTimer.C:
 				m.mu.Lock()
 				m.failedReduce = append(m.failedReduce, reduceIndex)
-				log.Printf("Master-: reduce %d fail", reduceIndex)
+				delete(m.processingReduce, reduceIndex)
 				m.mu.Unlock()
+				log.Printf("Master-: reduce %d fail", reduceIndex)
 				break
 			case <-m.reduceChan[reduceIndex]:
+				m.mu.Lock()
+				delete(m.processingReduce, reduceIndex)
+				m.mu.Unlock()
 				log.Printf("Master-: reduce %d success", reduceIndex)
 				break
 			}
@@ -219,10 +241,10 @@ func (m *Master) Assign(args *Args, reply *Reply) error {
 func (m *Master) server() {
 	rpc.Register(m)
 	rpc.HandleHTTP()
-	l, e := net.Listen("tcp", ":8888")
-	// sockname := masterSock()
-	// os.Remove(sockname)
-	// l, e := net.Listen("unix", sockname)
+	// l, e := net.Listen("tcp", ":8888")
+	sockname := masterSock()
+	os.Remove(sockname)
+	l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
@@ -258,6 +280,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.reduceChan[i] = make(chan int, 1)
 	}
 	m.nReduce = nReduce
+	m.processingMap = make(map[int]bool)
+	m.processingReduce = make(map[int]bool)
 
 	m.server()
 	return &m
