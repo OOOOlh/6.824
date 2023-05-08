@@ -21,6 +21,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,8 +75,9 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	currentTerm int
-	votedFor    int
-	log         []string
+
+	votedFor int
+	log      []string
 
 	commitIndex int
 	lastApplied int
