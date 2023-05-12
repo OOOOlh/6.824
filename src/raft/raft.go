@@ -249,13 +249,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//if follower's term > candidate's term, reject vote
 	//if follower's term equals to candidate's term, and follower's lastLogIndex > candidate's lastLogIndex,
 	//reject vote
-	log.Printf("server%d: role:%d receive vote request from %d, args %v, rf.LastLogTerm %v", rf.me, rf.role, args.CandidateId, args, rf.persistentState.Log[rf.lastLogIndex].Term)
+	log.Printf("server%d: role:%d receive vote request from %d, args %+v, rf.LastLogTerm %v", rf.me, rf.role, args.CandidateId, args, rf.persistentState.Log[rf.lastLogIndex].Term)
 	rf.mu.Lock()
 	reply.Term = rf.persistentState.CurrentTerm
+	// if rf.persistentState.VotedFor == -1 && rf.persistentState.CurrentTerm <= args.Term &&
+	// 	(rf.persistentState.Log[rf.lastLogIndex].Term < args.LastLogTerm || (rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex <= args.LastLogIndex)) {
+	// 	if rf.role == 0 {
+	// 		clearChannel(rf.follower.recRV)
+	// 		rf.follower.recRV <- 1
+	// 	} else if rf.role == 1 {
+	// 		clearChannel(rf.candidate.recRV)
+	// 		rf.candidate.recRV <- 1
+	// 	}
+	// 	rf.persistentState.VotedFor = args.CandidateId
+	// 	rf.persist()
+	// 	reply.VoteGranted = true
+	// } else {
+	// 	reply.VoteGranted = false
+	// 	log.Printf("server%d: role:%d reject vote to %d, args %v", rf.me, rf.role, args.CandidateId, args)
+	// }
+
 	if rf.persistentState.VotedFor != -1 || rf.persistentState.CurrentTerm > args.Term || rf.persistentState.Log[rf.lastLogIndex].Term > args.LastLogTerm ||
 		(rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex > args.LastLogIndex) {
 		reply.VoteGranted = false
-		log.Printf("server%d: role:%d reject vote to %d, args %v", rf.me, rf.role, args.CandidateId, args)
+		log.Printf("server%d: role:%d reject vote to %d, args %+v", rf.me, rf.role, args.CandidateId, args)
 	} else {
 		if rf.role == 0 {
 			clearChannel(rf.follower.recRV)
@@ -332,7 +349,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persistentState.VotedFor = -1
 		rf.persist()
 	}
-
 	//return false if leader's term < follower's term(1) or if log doesn’t contain an entry at prevLogIndex
 	//whose term matches prevLogTerm(2)
 	//a. different term
@@ -650,6 +666,11 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, finish 
 	rf.mu.Unlock()
 	args.Entries = entries
 
+	if rf.role != 2 {
+		rf.mu.Lock()
+		return
+	}
+
 	ok := rf.sendAppendEntries(server, args, reply)
 	//receive reply
 	//if the server is healthy, it will return reply immediately, and next heartbeat will send up-to-date info, don't need to wait other servers
@@ -750,7 +771,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 
 			reply := &RequestVoteReply{}
 			log.Printf("server%d: role:%d request vote to %d, all votes %d", rf.me, rf.role, server, votes)
-			if rf.role == 0 {
+			if rf.role != 1 {
 				return
 			}
 			startTime = time.Now()
@@ -828,7 +849,7 @@ func electionTimeout(ch chan int) {
 func candidateTimeout(ch chan int) {
 	//random timeout
 	rand.Seed(time.Now().UnixNano())
-	r := rand.Intn(50) + 100
+	r := rand.Intn(100) + 100
 
 	var electionTimeout time.Duration = time.Duration(r) * time.Millisecond
 	time.Sleep(electionTimeout)
