@@ -272,12 +272,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.persistentState.VotedFor != -1 || rf.persistentState.CurrentTerm > args.Term || rf.persistentState.Log[rf.lastLogIndex].Term > args.LastLogTerm ||
 		(rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex > args.LastLogIndex) {
 		reply.VoteGranted = false
-		log.Printf("server%d: role:%d reject vote to %d, args %+v", rf.me, rf.role, args.CandidateId, args)
+		log.Printf("server%d: role:%d reject vote to %d, args %+v, voteTo %d", rf.me, rf.role, args.CandidateId, args, rf.persistentState.VotedFor)
 	} else {
+		log.Printf("server%d: role:%d vote to %d", rf.me, rf.role, args.CandidateId)
 		if rf.role == 0 {
 			clearChannel(rf.follower.recRV)
 			rf.follower.recRV <- 1
 		} else if rf.role == 1 {
+			// if args.Term > rf.persistentState.CurrentTerm {
+			// 	rf.role = 0
+			// }
 			clearChannel(rf.candidate.recRV)
 			rf.candidate.recRV <- 1
 		}
@@ -346,7 +350,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.persistentState.CurrentTerm {
 		rf.persistentState.CurrentTerm = args.Term
 		//when receive from leader, refresh rf.votedFor
-		rf.persistentState.VotedFor = -1
+		// rf.persistentState.VotedFor = -1
 		rf.persist()
 	}
 	//return false if leader's term < follower's term(1) or if log doesn’t contain an entry at prevLogIndex
@@ -409,7 +413,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if rf.role == 1 {
 		if args.Term >= rf.persistentState.CurrentTerm {
 			rf.role = 0
-			rf.persistentState.VotedFor = -1
+			// rf.persistentState.VotedFor = -1
 			rf.persist()
 			clearChannel(rf.candidate.recAE)
 			rf.candidate.recAE <- 1
@@ -418,7 +422,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if rf.role == 2 {
 		if args.Term >= rf.persistentState.CurrentTerm {
 			rf.role = 0
-			rf.persistentState.VotedFor = -1
+			// rf.persistentState.VotedFor = -1
 			rf.persistentState.CurrentTerm = args.Term
 			rf.persist()
 		}
@@ -586,25 +590,28 @@ func StateListening(rf *Raft) {
 
 			//during this time,a candidate may convert to follower
 			select {
+			//when election timeout, candidate should request vote again
 			case <-candidateTimeoutChan:
 				rf.mu.Lock()
 				rf.persistentState.VotedFor = -1
 				rf.persist()
-				rf.role = 0
-				log.Printf("server%d: role:%d election timeout, convert to follower", rf.me, rf.role)
+				rf.persistentState.CurrentTerm++
+				// rf.role = 0
+				// log.Printf("server%d: role:%d election timeout, convert to follower", rf.me, rf.role)
 				rf.mu.Unlock()
 				break
 			case <-rf.candidate.recAE:
 				//receive AppendEntries Request and leader term >= candidate term, reset timeout
 				break
 			case <-candidateAttemptRequestVoteChan:
-				rf.mu.Lock()
-				if rf.role != 2 {
-					rf.role = 0
-				}
-				rf.persistentState.VotedFor = -1
-				rf.persist()
-				rf.mu.Unlock()
+				// rf.mu.Lock()
+				// if rf.role != 2 {
+				// 	rf.role = 0
+				// }
+				// rf.persistentState.VotedFor = -1
+				// rf.persist()
+				// rf.mu.Unlock()
+
 				//request vote and receive votes, maybe convert to leader, if there is one server timeout, this channel will wait
 				break
 			}
@@ -619,8 +626,8 @@ func StateListening(rf *Raft) {
 			// duration := time.Now().UnixNano()/1e6 - beginTime
 			// log.Printf("server%d: Leader, duration %v", rf.me, duration)
 
-			//wait heartbeat timeout
-			var heartbeatTimeout time.Duration = time.Duration(150) * time.Millisecond
+			//wait heartbeat timeout, 200ms can pass TestFigure82C, 180ms can't
+			var heartbeatTimeout time.Duration = time.Duration(100) * time.Millisecond
 			time.Sleep(heartbeatTimeout)
 			rf.mu.Lock()
 			finish = true
@@ -678,7 +685,7 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, finish 
 	if ok && !*finish {
 		if reply.Success {
 			(*argeeNums)++
-			log.Printf("server%d: receive success reply from %d, current agreeNum %d / %d", rf.me, server, *argeeNums, len(rf.peers))
+			log.Printf("server%d: receive success reply from %d, current agreeNum %d / %d, entries %v", rf.me, server, *argeeNums, len(rf.peers), entries)
 			// fmt.Println("++++", *argeeNums)
 			rf.nextIndex[server] = rf.lastLogIndex + 1
 		} else {
@@ -686,7 +693,7 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, finish 
 			if rf.persistentState.CurrentTerm < reply.Term {
 				//convert to a follower and update term
 				rf.role = 0
-				rf.persistentState.VotedFor = -1
+				// rf.persistentState.VotedFor = -1
 				log.Printf("server%d: update term to %d from follower %d", rf.me, reply.Term, server)
 				rf.persistentState.CurrentTerm = reply.Term
 				rf.persist()
@@ -748,7 +755,7 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, finish 
 
 func (rf *Raft) AttemptRequestVote(ch chan int) {
 	var votes int = 1
-	// var term int = rf.persistentState.CurrentTerm
+	var term int = rf.persistentState.CurrentTerm
 	var wg sync.WaitGroup
 	for i, _ := range rf.peers {
 		if i == rf.me {
@@ -770,7 +777,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 			rf.mu.Unlock()
 
 			reply := &RequestVoteReply{}
-			log.Printf("server%d: role:%d request vote to %d, all votes %d", rf.me, rf.role, server, votes)
+			log.Printf("server%d: role:%d request vote from %d, all votes %d", rf.me, rf.role, server, votes)
 			if rf.role != 1 {
 				return
 			}
@@ -789,7 +796,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 					// }
 					if votes > len(rf.peers)/2 {
 						rf.role = 2
-						rf.persistentState.VotedFor = -1
+						// rf.persistentState.VotedFor = -1
 						rf.persist()
 						rf.nextIndex = make([]int, len(rf.peers))
 						for i, _ := range rf.peers {
@@ -801,6 +808,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 						log.Printf("server%d: become leader current Term: %d, log: %v, nextIndex: %v", rf.me, rf.persistentState.CurrentTerm, rf.persistentState.Log, rf.nextIndex)
 						//if get enough votes, convert to leader immediately
 						ch <- 1
+
 					}
 				} else {
 					log.Printf("server%d: role:%d can't get vote from %d, all votes %d", rf.me, rf.role, server, votes)
@@ -809,20 +817,30 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 						log.Printf("server%d: role:%d get vote from %d, all votes %d, but term >= candidate term, reply %v, currentTerm %d", rf.me, rf.role, server, votes, reply, rf.persistentState.CurrentTerm)
 						rf.role = 0
 						rf.persistentState.CurrentTerm = reply.Term
-						rf.persistentState.VotedFor = -1
+						// rf.persistentState.VotedFor = -1
 						rf.persist()
 					}
-					// if term < reply.Term {
-					// 	term = reply.Term
-					// }
+					if term < reply.Term {
+						term = reply.Term
+					}
 				}
 			} else {
-				log.Printf("server%d: role:%d get vote from %d, not ok, time: %d, all votes %d", rf.me, rf.role, server, time.Now().Sub(startTime).Milliseconds(), votes)
+				log.Printf("server%d: role:%d get vote from %d, not ok %v, time: %d, all votes %d", rf.me, rf.role, server, ok, time.Now().Sub(startTime).Milliseconds(), votes)
 			}
 			rf.mu.Unlock()
 		}(i)
 	}
 	wg.Wait()
+	rf.mu.Lock()
+	if rf.role == 1 {
+		//if there are no enough votes, convert to follower
+		log.Printf("server%d: role:%d can't get enough votes, all votes %d", rf.me, rf.role, votes)
+		rf.role = 0
+		rf.persistentState.CurrentTerm = term
+		// rf.persistentState.VotedFor = -1
+		rf.persist()
+	}
+	rf.mu.Unlock()
 	// rf.mu.Lock()
 	// if rf.role == 1 {
 	// 	log.Printf("server%d: role:%d don't get enough vote %d, convert to follower", rf.me, rf.role, votes)
