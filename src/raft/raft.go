@@ -245,34 +245,20 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-
-	//if follower's term > candidate's term, reject vote
-	//if follower's term equals to candidate's term, and follower's lastLogIndex > candidate's lastLogIndex,
-	//reject vote
 	log.Printf("server%d: role:%d receive vote request from %d, args %+v, rf.LastLogTerm %v", rf.me, rf.role, args.CandidateId, args, rf.persistentState.Log[rf.lastLogIndex].Term)
 	rf.mu.Lock()
-	reply.Term = rf.persistentState.CurrentTerm
-	// if rf.persistentState.VotedFor == -1 && rf.persistentState.CurrentTerm <= args.Term &&
-	// 	(rf.persistentState.Log[rf.lastLogIndex].Term < args.LastLogTerm || (rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex <= args.LastLogIndex)) {
-	// 	if rf.role == 0 {
-	// 		clearChannel(rf.follower.recRV)
-	// 		rf.follower.recRV <- 1
-	// 	} else if rf.role == 1 {
-	// 		clearChannel(rf.candidate.recRV)
-	// 		rf.candidate.recRV <- 1
-	// 	}
-	// 	rf.persistentState.VotedFor = args.CandidateId
-	// 	rf.persist()
-	// 	reply.VoteGranted = true
-	// } else {
-	// 	reply.VoteGranted = false
-	// 	log.Printf("server%d: role:%d reject vote to %d, args %v", rf.me, rf.role, args.CandidateId, args)
-	// }
-
-	if rf.persistentState.VotedFor != -1 || rf.persistentState.CurrentTerm > args.Term || rf.persistentState.Log[rf.lastLogIndex].Term > args.LastLogTerm ||
-		(rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex > args.LastLogIndex) {
+	if rf.persistentState.CurrentTerm > args.Term {
 		reply.VoteGranted = false
-		log.Printf("server%d: role:%d reject vote to %d, args %+v, voteTo %d", rf.me, rf.role, args.CandidateId, args, rf.persistentState.VotedFor)
+		log.Printf("server%d: role:%d reject vote to %d, term args %+v, rf %d", rf.me, rf.role, args.CandidateId, args.Term, rf.persistentState.CurrentTerm)
+	} else if rf.persistentState.VotedFor != -1 && rf.persistentState.VotedFor != args.CandidateId && rf.persistentState.CurrentTerm == args.Term {
+		reply.VoteGranted = false
+		log.Printf("server%d: role:%d reject vote to %d, voteTo %d", rf.me, rf.role, args.CandidateId, rf.persistentState.VotedFor)
+	} else if rf.persistentState.Log[rf.lastLogIndex].Term > args.LastLogTerm {
+		reply.VoteGranted = false
+		log.Printf("server%d: role:%d reject vote to %d, logTerm args %d rf %d", rf.me, rf.role, args.CandidateId, args.LastLogTerm, rf.persistentState.Log[rf.lastLogIndex].Term)
+	} else if rf.persistentState.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex > args.LastLogIndex {
+		reply.VoteGranted = false
+		log.Printf("server%d: role:%d reject vote to %d, logIndex args %d rf %d", rf.me, rf.role, args.CandidateId, args.LastLogIndex, rf.lastLogIndex)
 	} else {
 		log.Printf("server%d: role:%d vote to %d", rf.me, rf.role, args.CandidateId)
 		if rf.role == 0 {
@@ -286,18 +272,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.candidate.recRV <- 1
 		}
 		rf.persistentState.VotedFor = args.CandidateId
+		rf.persistentState.CurrentTerm = args.Term
 		rf.persist()
 		reply.VoteGranted = true
 	}
+	reply.Term = rf.persistentState.CurrentTerm
 	rf.mu.Unlock()
-	// if rf.votedFor != -1 || args.LastLogTerm < rf.currentTerm {
-	// 	reply.VoteGranted = false
-	// } else if args.LastLogIndex >= rf.lastLogIndex {
-	// 	clearChannel(rf.follower.recRV)
-	// 	rf.follower.recRV <- 1
-	// 	reply.VoteGranted = true
-	// 	rf.votedFor = args.CandidateId
-	// }
 }
 
 //
@@ -393,17 +373,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.commitIndex = args.LeaderCommit
 		}
+		rf.persistentState.VotedFor = -1
 		rf.persist()
 	}
-
-	// //follower or candidate append leader's log
-	// if len(args.Entries) != 0 {
-	// 	for _, command := range args.Entries {
-	// 		rf.log = append(rf.log, Entry{command: command, term: args.Term})
-	// 	}
-
-	// 	rf.lastLogIndex = len(rf.log)
-	// }
 
 	//if follower receive AppendEntries, reset election timeout
 	if rf.role == 0 {
@@ -538,7 +510,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.readPersist(rf.persister.raftstate)
 	rf.lastLogIndex = len(rf.persistentState.Log) - 2
-	// rf.leader.crashedFollowersChan = make(chan int, len(peers))
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -564,7 +535,7 @@ func StateListening(rf *Raft) {
 				rf.mu.Lock()
 				//convert to candidate
 				rf.role = 1
-				rf.persistentState.VotedFor = -1
+				rf.persistentState.VotedFor = rf.me
 				rf.persistentState.CurrentTerm++
 				rf.persist()
 				log.Printf("server%d: convert to candidate, current Term: %d, log: %v", rf.me, rf.persistentState.CurrentTerm, rf.persistentState.Log)
@@ -593,24 +564,15 @@ func StateListening(rf *Raft) {
 			//when election timeout, candidate should request vote again
 			case <-candidateTimeoutChan:
 				rf.mu.Lock()
-				rf.persistentState.VotedFor = -1
+				rf.persistentState.VotedFor = rf.me
 				rf.persist()
 				rf.persistentState.CurrentTerm++
-				// rf.role = 0
-				// log.Printf("server%d: role:%d election timeout, convert to follower", rf.me, rf.role)
 				rf.mu.Unlock()
 				break
 			case <-rf.candidate.recAE:
 				//receive AppendEntries Request and leader term >= candidate term, reset timeout
 				break
 			case <-candidateAttemptRequestVoteChan:
-				// rf.mu.Lock()
-				// if rf.role != 2 {
-				// 	rf.role = 0
-				// }
-				// rf.persistentState.VotedFor = -1
-				// rf.persist()
-				// rf.mu.Unlock()
 
 				//request vote and receive votes, maybe convert to leader, if there is one server timeout, this channel will wait
 				break
@@ -623,8 +585,6 @@ func StateListening(rf *Raft) {
 			// beginTime := time.Now().UnixNano() / 1e6
 			finish := false
 			go rf.AttemptSendAppendEntries(&finish)
-			// duration := time.Now().UnixNano()/1e6 - beginTime
-			// log.Printf("server%d: Leader, duration %v", rf.me, duration)
 
 			//wait heartbeat timeout, 200ms can pass TestFigure82C, 180ms can't
 			var heartbeatTimeout time.Duration = time.Duration(100) * time.Millisecond
@@ -851,7 +811,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 	// rf.mu.Unlock()
 	//convert to leader
 	log.Printf("server%d: get votes: %d Term: %d, log: %v, nextIndex: %v", rf.me, votes, rf.persistentState.CurrentTerm, rf.persistentState.Log, rf.nextIndex)
-	ch <- 1
+	// ch <- 1
 }
 
 func electionTimeout(ch chan int) {
