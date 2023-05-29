@@ -31,6 +31,7 @@ TOPICS = {
     "APPE": "#8B0000",
     "FOLL": "#008000",
     "CAND": "#FF0000",
+    "SERV": "#FF00FF",
 }
 # fmt: on
 

@@ -19,11 +19,7 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
-	"log"
 	"math/rand"
-	"os"
-	"strconv"
 
 	"sync"
 	"sync/atomic"
@@ -31,6 +27,7 @@ import (
 
 	"../labgob"
 	"../labrpc"
+	"../util"
 )
 
 // func init() {
@@ -47,70 +44,70 @@ import (
 // 	return
 // }
 
-// Retrieve the verbosity level from an environment variable
-func getVerbosity() int {
-	v := os.Getenv("VERBOSE")
-	level := 0
-	if v != "" {
-		var err error
-		level, err = strconv.Atoi(v)
-		if err != nil {
-			log.Fatalf("Invalid verbosity %v", v)
-		}
-	}
-	return level
-}
+// // Retrieve the verbosity level from an environment variable
+// func getVerbosity() int {
+// 	v := os.Getenv("VERBOSE")
+// 	level := 0
+// 	if v != "" {
+// 		var err error
+// 		level, err = strconv.Atoi(v)
+// 		if err != nil {
+// 			log.Fatalf("Invalid verbosity %v", v)
+// 		}
+// 	}
+// 	return level
+// }
 
-type logTopic string
+// type logTopic string
 
-const (
-	dClient  logTopic = "CLNT"
-	dCommit  logTopic = "CMIT"
-	dDrop    logTopic = "DROP"
-	dError   logTopic = "ERRO"
-	dInfo    logTopic = "INFO"
-	dLeader  logTopic = "LEAD"
-	dFoll    logTopic = "FOLL"
-	dCand    logTopic = "CAND"
-	dLog     logTopic = "LOG1"
-	dLog2    logTopic = "LOG2"
-	dPersist logTopic = "PERS"
-	dSnap    logTopic = "SNAP"
-	dTerm    logTopic = "TERM"
-	dTest    logTopic = "TEST"
-	dTimer   logTopic = "TIMR"
-	dTrace   logTopic = "TRCE"
-	dVote    logTopic = "VOTE"
-	dAppE    logTopic = "APPE"
-	dWarn    logTopic = "WARN"
-)
+// const (
+// 	dClient  logTopic = "CLNT"
+// 	dCommit  logTopic = "CMIT"
+// 	dDrop    logTopic = "DROP"
+// 	dError   logTopic = "ERRO"
+// 	dInfo    logTopic = "INFO"
+// 	dLeader  logTopic = "LEAD"
+// 	dFoll    logTopic = "FOLL"
+// 	dCand    logTopic = "CAND"
+// 	dLog     logTopic = "LOG1"
+// 	dLog2    logTopic = "LOG2"
+// 	dPersist logTopic = "PERS"
+// 	dSnap    logTopic = "SNAP"
+// 	dTerm    logTopic = "TERM"
+// 	dTest    logTopic = "TEST"
+// 	dTimer   logTopic = "TIMR"
+// 	dTrace   logTopic = "TRCE"
+// 	dVote    logTopic = "VOTE"
+// 	dAppE    logTopic = "APPE"
+// 	dWarn    logTopic = "WARN"
+// )
 
-var debugStart time.Time
-var debugVerbosity int
+// var debugStart time.Time
+// var debugVerbosity int
 
-func init() {
-	debugVerbosity = getVerbosity()
-	debugStart = time.Now()
-	// t := time.Now().Unix()
-	// serverName = strconv.FormatInt(t, 10)
-	// file := "./" + serverName + "message" + ".log"
-	// logFile, err := os.OpenFile(file, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// log.SetOutput(logFile) // 将文件设置为log输出的文件
-	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
-}
+// func init() {
+// 	debugVerbosity = getVerbosity()
+// 	debugStart = time.Now()
+// 	// t := time.Now().Unix()
+// 	// serverName = strconv.FormatInt(t, 10)
+// 	// file := "./" + serverName + "message" + ".log"
+// 	// logFile, err := os.OpenFile(file, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+// 	// if err != nil {
+// 	// 	panic(err)
+// 	// }
+// 	// log.SetOutput(logFile) // 将文件设置为log输出的文件
+// 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+// }
 
-func Debug(topic logTopic, format string, a ...interface{}) {
-	if debugVerbosity >= 1 {
-		time := time.Since(debugStart).Microseconds()
-		time /= 100
-		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
-		format = prefix + format
-		log.Printf(format, a...)
-	}
-}
+// func Debug(topic logTopic, format string, a ...interface{}) {
+// 	if debugVerbosity >= 1 {
+// 		time := time.Since(debugStart).Microseconds()
+// 		time /= 100
+// 		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
+// 		format = prefix + format
+// 		log.Printf(format, a...)
+// 	}
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -127,6 +124,8 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
+	SnapshotValid bool
 }
 
 //
@@ -238,14 +237,14 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var persistentState PersistentState
 	if err := d.Decode(&persistentState); err != nil {
-		Debug(dError, "S%d T:%d R:%d -> readPersist", rf.me, rf.CurrentTerm, rf.role)
+		util.Debug(util.DError, "S%d T:%d R:%d -> readPersist", rf.me, rf.CurrentTerm, rf.role)
 	} else {
 		rf.CurrentTerm = persistentState.CurrentTerm
 		rf.VotedFor = persistentState.VotedFor
 		rf.Log = persistentState.Log
 		rf.lastLogIndex = len(rf.Log) - 2
 	}
-	Debug(dInfo, "S%d T:%d R:%d -> readPersist VF:%d CT:%d L0:%v L:%v",
+	util.Debug(util.DInfo, "S%d T:%d R:%d -> readPersist VF:%d CT:%d L0:%v L:%v",
 		rf.me, rf.CurrentTerm, rf.role, rf.VotedFor, rf.CurrentTerm, rf.Log[1], rf.Log[len(rf.Log)-2])
 	// log.Printf("server%d: restart VotedFor%d, CurrentTerm %d, log %v ", rf.me, rf.VotedFor, rf.CurrentTerm, rf.Log)
 }
@@ -307,18 +306,18 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	isLeader := true
 	rf.mu.Lock()
+	isLeader := true
 	term := rf.CurrentTerm
 
 	if rf.role == 2 {
 		// log.Printf("server %d role %d term %d: receive command %v from client", rf.me, rf.role, rf.CurrentTerm, command)
 		entry := Entry{command, rf.CurrentTerm}
 
-		Debug(dClient, "S%d T:%d R:%d <- C:%v", rf.me, rf.CurrentTerm, rf.role, entry.Command)
+		util.Debug(util.DClient, "S%d T:%d R:%d <- C:%v", rf.me, rf.CurrentTerm, rf.role, entry.Command)
 		//update log, lastLogIndex, nextIndex
 		rf.Log[rf.lastLogIndex+1] = entry
-		Debug(dPersist, "S%d T:%d R:%d -> S%d P L0:%v L:%v",
+		util.Debug(util.DPersist, "S%d T:%d R:%d -> S%d P L0:%v L:%v",
 			rf.me, rf.CurrentTerm, rf.role, rf.me, rf.Log[1], rf.Log[len(rf.Log)-2])
 		rf.Log = append(rf.Log, Entry{nil, -1})
 		rf.persist()
@@ -426,9 +425,10 @@ func (rf *Raft) applyLog() {
 					CommandValid: true,
 					Command:      rf.Log[rf.lastApplied].Command,
 					CommandIndex: rf.lastApplied,
+					CommandTerm:  rf.Log[rf.lastApplied].Term,
 				}
 				rf.applyCh <- applyMsg
-				Debug(dCommit, "S%d T:%d R:%d -> RCI:%d RCIL:%v",
+				util.Debug(util.DCommit, "S%d T:%d R:%d -> RCI:%d RCIL:%v",
 					rf.me, rf.CurrentTerm, rf.role, rf.lastApplied, rf.Log[rf.lastApplied])
 				delay = false
 			}
@@ -454,7 +454,7 @@ func StateListening(rf *Raft) {
 		rf.mu.Unlock()
 
 		if role == 0 {
-			Debug(dFoll, "S%d T:%d R:%d -> Follower S%d L0:%v L:%v", me, term, role, me, c0, c)
+			util.Debug(util.DFoll, "S%d T:%d R:%d -> Follower S%d L0:%v L:%v", me, term, role, me, c0, c)
 
 			var followerElectionTimeoutChan chan int = make(chan int, 1)
 			go electionTimeout(followerElectionTimeoutChan)
@@ -464,7 +464,7 @@ func StateListening(rf *Raft) {
 				rf.mu.Lock()
 				//convert to candidate
 				rf.role = 1
-				Debug(dFoll, "S%d T:%d R:%d -> S%d CTo R%d for ETO", rf.me, rf.CurrentTerm, 0, rf.me, rf.role)
+				util.Debug(util.DFoll, "S%d T:%d R:%d -> S%d CTo R%d for ETO", rf.me, rf.CurrentTerm, 0, rf.me, rf.role)
 				rf.VotedFor = rf.me
 				rf.CurrentTerm++
 				rf.persist()
@@ -473,16 +473,16 @@ func StateListening(rf *Raft) {
 				rf.mu.Unlock()
 				break
 			case <-rf.follower.recAE:
-				Debug(dFoll, "S%d T:%d R:%d -> reset ETO for AE", me, term, role)
+				util.Debug(util.DFoll, "S%d T:%d R:%d -> reset ETO for AE", me, term, role)
 				//receive AppendEntries Request, reset timeout
 				break
 			case <-rf.follower.recRV:
-				Debug(dFoll, "S%d T:%d R:%d -> reset ETO for RV", me, term, role)
+				util.Debug(util.DFoll, "S%d T:%d R:%d -> reset ETO for RV", me, term, role)
 				//receive RequestVote Request, reset timeout
 				break
 			}
 		} else if role == 1 {
-			Debug(dCand, "S%d T:%d R:%d -> Candi S%d L0:%v L:%v", me, term, role, me, c0, c)
+			util.Debug(util.DCand, "S%d T:%d R:%d -> Candi S%d L0:%v L:%v", me, term, role, me, c0, c)
 			// log.Printf("candid %d term %d: StateListening Candidate, request vote, log: %v", rf.me, rf.CurrentTerm, rf.Log)
 			var attemptRequestVoteChan chan int = make(chan int, 1)
 			// go rf.AttemptRequestVote(candidateAttemptRequestVoteChan)
@@ -499,7 +499,6 @@ func StateListening(rf *Raft) {
 				go rf.AttemptRequestVote(attemptRequestVoteChan)
 				select {
 				case <-candidateTimeoutChan:
-					break
 				case <-rf.candidate.recAE:
 					//receive AppendEntries Request and leader term >= candidate term, reset timeout
 					break Loop
@@ -508,21 +507,21 @@ func StateListening(rf *Raft) {
 					break Loop
 				case <-electionTimeoutChan:
 					rf.mu.Lock()
-					Debug(dInfo, "S%d T:%d R:%d -> time:%v ",
+					util.Debug(util.DInfo, "S%d T:%d R:%d -> time:%v ",
 						rf.me, rf.CurrentTerm, rf.role, time.Now().Nanosecond()-tim)
 					rf.VotedFor = rf.me
 					rf.CurrentTerm++
 					rf.persist()
 					// Debug(dPersist, "S%d T:%d R:%d -> S%d P L0:%v L:%v",
 					// 	rf.me, rf.CurrentTerm, rf.role, rf.me, c0, c)
-					Debug(dCand, "S%d T:%d R:%d -> S%d term++", me, rf.CurrentTerm, role, me)
+					util.Debug(util.DCand, "S%d T:%d R:%d -> S%d term++", me, rf.CurrentTerm, role, me)
 					rf.mu.Unlock()
 					break Loop
 				}
 			}
 
 		} else {
-			Debug(dLeader, "S%d T:%d R:%d -> Leader S%d L0:%v L:%v", me, term, role, me, c0, c)
+			util.Debug(util.DLeader, "S%d T:%d R:%d -> Leader S%d L0:%v L:%v", me, term, role, me, c0, c)
 			// log.Printf("leader %d term %d: StateListening Leader, nextIndex: %v, log: %v, commitIndex: %d", rf.me, rf.CurrentTerm, rf.nextIndex, rf.Log, rf.commitIndex)
 			go rf.AttemptSendAppendEntries()
 
@@ -538,12 +537,12 @@ func StateListening(rf *Raft) {
 
 func (rf *Raft) convertToFollower(term int) {
 	rf.mu.Lock()
-	Debug(dInfo, "S%d T:%d R:%d -> S%d CTF", rf.me, rf.CurrentTerm, rf.role, rf.me)
+	util.Debug(util.DInfo, "S%d T:%d R:%d -> S%d CTF", rf.me, rf.CurrentTerm, rf.role, rf.me)
 	rf.role = 0
 	rf.VotedFor = -1
 	rf.CurrentTerm = term
 	rf.persist()
-	Debug(dPersist, "S%d T:%d R:%d -> S%d P L0:%v L:%v",
+	util.Debug(util.DPersist, "S%d T:%d R:%d -> S%d P L0:%v L:%v",
 		rf.me, rf.CurrentTerm, rf.role, rf.me, rf.Log[1], rf.Log[len(rf.Log)-2])
 	rf.mu.Unlock()
 }
@@ -584,11 +583,9 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, wg *syn
 	}
 	// entries := rf.Log[rf.nextIndex[server]:]
 	var entries = make([]Entry, 0)
-	for _, logs := range rf.Log[rf.nextIndex[server]:] {
-		entries = append(entries, logs)
-	}
+	entries = append(entries, rf.Log[rf.nextIndex[server]:]...)
 	args.Entries = entries
-	Debug(dAppE, "S%d T:%d R:%d -> S%d Sending PLI: %d PLT: %d LC: %d",
+	util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d Sending PLI: %d PLT: %d LC: %d",
 		rf.me, rf.CurrentTerm, rf.role, server, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	if rf.role != 2 {
@@ -607,7 +604,7 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, wg *syn
 	//ok
 	if reply.Success {
 		(*argeeNums)++
-		Debug(dAppE, "S%d T:%d R:%d -> S%d RSucc AN:%d", rf.me, rf.CurrentTerm, rf.role, server, *argeeNums)
+		util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d RSucc AN:%d", rf.me, rf.CurrentTerm, rf.role, server, *argeeNums)
 		rf.nextIndex[server] = args.PrevLogIndex + len(entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 
@@ -637,10 +634,10 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, wg *syn
 	} else {
 		//if not success, check the term, XTerm, XIndex, XLastIndex
 		if rf.CurrentTerm < reply.Term {
-			Debug(dAppE, "S%d T:%d R:%d -> S%d RT:%d > CT:%d for AE",
+			util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d RT:%d > CT:%d for AE",
 				rf.me, rf.CurrentTerm, rf.role, server, reply.Term, rf.CurrentTerm)
 			// rf.convertToFollower(reply.Term)
-			Debug(dInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
+			util.Debug(util.DInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
 			rf.role = 0
 			rf.VotedFor = -1
 			rf.CurrentTerm = reply.Term
@@ -655,12 +652,12 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, wg *syn
 
 			// }
 			rf.nextIndex[server] = reply.XIndex
-			Debug(dAppE, "S%d T:%d  R:%d -> S%d RXI:%d for AE",
+			util.Debug(util.DAppE, "S%d T:%d  R:%d -> S%d RXI:%d for AE",
 				rf.me, rf.CurrentTerm, rf.role, server, reply.XIndex)
 		} else {
 			//rf.nextIndex[server]> reply.XLastIndex, so it won't cross the border
 			rf.nextIndex[server] = reply.XLastIndex
-			Debug(dAppE, "S%d T:%d  R:%d -> S%d RXL:%d for AE",
+			util.Debug(util.DAppE, "S%d T:%d  R:%d -> S%d RXL:%d for AE",
 				rf.me, rf.CurrentTerm, rf.role, server, reply.XLastIndex)
 		}
 	}
@@ -670,12 +667,12 @@ func (rf *Raft) SendAppendEntriesToOneServer(server int, argeeNums *int, wg *syn
 //follower receive
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	Debug(dAppE, "S%d T:%d R:%d <- S%d AE", rf.me, rf.CurrentTerm, rf.role, args.LeaderId)
+	util.Debug(util.DAppE, "S%d T:%d R:%d <- S%d AE", rf.me, rf.CurrentTerm, rf.role, args.LeaderId)
 	reply.Success = false
 
 	if args.Term < rf.CurrentTerm {
 		// log.Printf("server %d role %d term %d: bigger term, append entries from %d", rf.me, rf.role, rf.CurrentTerm, args.LeaderId)
-		Debug(dAppE, "S%d T:%d R:%d -> S%d RCTerm:%d > ATerm:%d", rf.me, rf.CurrentTerm, rf.role, args.LeaderId, rf.CurrentTerm, args.Term)
+		util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d RCTerm:%d > ATerm:%d", rf.me, rf.CurrentTerm, rf.role, args.LeaderId, rf.CurrentTerm, args.Term)
 		reply.Term = rf.CurrentTerm
 		rf.mu.Unlock()
 		return
@@ -683,7 +680,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.XTerm = -1
 		reply.XIndex = -1
 		reply.XLastIndex = rf.lastLogIndex + 1
-		Debug(dAppE, "S%d T:%d R:%d -> S%d APL:%d > RLLI:%d RXLI:%d",
+		util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d APL:%d > RLLI:%d RXLI:%d",
 			rf.me, rf.CurrentTerm, rf.role, args.LeaderId, args.PrevLogIndex, rf.lastLogIndex, reply.XLastIndex)
 	} else if rf.lastLogIndex != 0 && rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.XTerm = rf.Log[args.PrevLogIndex].Term
@@ -695,7 +692,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//if same index and different term, delete args.PrevLogIndex and following entries
 		// rf.Log = rf.Log[:args.PrevLogIndex]
 		// rf.lastLogIndex = args.PrevLogIndex - 1
-		Debug(dAppE, "S%d T:%d R:%d -> S%d RLT:%d != APLT:%d RXT:%d RXI:%d",
+		util.Debug(util.DAppE, "S%d T:%d R:%d -> S%d RLT:%d != APLT:%d RXT:%d RXI:%d",
 			rf.me, rf.CurrentTerm, rf.role, args.LeaderId, rf.Log[args.PrevLogIndex].Term, args.PrevLogTerm, reply.XTerm, reply.XLastIndex)
 	} else if rf.lastLogIndex == 0 || rf.Log[args.PrevLogIndex].Term == args.PrevLogTerm {
 		reply.Success = true
@@ -750,7 +747,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//if candidate receive AppendEntries, if leader term >= candidate term, candidate convert to follower,
 	} else {
 		// rf.convertToFollower(args.Term)
-		Debug(dInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
+		util.Debug(util.DInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
 		rf.role = 0
 		rf.VotedFor = -1
 		rf.CurrentTerm = args.Term
@@ -792,7 +789,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 			// fmt.Println(server)
 			// fmt.Printf("S%d T:%d R:%d -> S%d Sending LLI: %d LLT: %d",
 			// 	rf.me, rf.CurrentTerm, rf.role, server, args.LastLogIndex, args.LastLogTerm)
-			Debug(dVote, "S%d T:%d R:%d -> S%d Sending LLI: %d LLT: %d",
+			util.Debug(util.DVote, "S%d T:%d R:%d -> S%d Sending LLI: %d LLT: %d",
 				rf.me, rf.CurrentTerm, rf.role, server, args.LastLogIndex, args.LastLogTerm)
 			rf.mu.Unlock()
 
@@ -810,10 +807,10 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 
 			if reply.Term > rf.CurrentTerm {
 				// log.Printf("candid %d term %d: all votes %d, but term >= candidate term, reply %v", rf.me, rf.CurrentTerm, votes, reply)
-				Debug(dVote, "S%d T:%d R:%d -> S%d RT:%d > CT:%d for RV",
+				util.Debug(util.DVote, "S%d T:%d R:%d -> S%d RT:%d > CT:%d for RV",
 					rf.me, rf.CurrentTerm, rf.role, server, reply.Term, rf.CurrentTerm)
 				// rf.convertToFollower(reply.Term)
-				Debug(dInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
+				util.Debug(util.DInfo, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
 				rf.role = 0
 				rf.VotedFor = -1
 				rf.CurrentTerm = args.Term
@@ -826,7 +823,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 
 			if reply.VoteGranted {
 				votes++
-				Debug(dVote, "S%d T:%d R:%d <- S%d RVG votes:%d all:%d", rf.me, rf.CurrentTerm, rf.role, server, votes, len(rf.peers))
+				util.Debug(util.DVote, "S%d T:%d R:%d <- S%d RVG votes:%d all:%d", rf.me, rf.CurrentTerm, rf.role, server, votes, len(rf.peers))
 				// log.Printf("candid %d term %d: get vote from %d, all votes %d", rf.me, rf.CurrentTerm, server, votes)
 				if votes > len(rf.peers)/2 {
 					rf.role = 2
@@ -855,7 +852,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 					return
 				}
 			} else {
-				Debug(dVote, "S%d T:%d R:%d <- S%d RVNG votes:%d all:%d", rf.me, rf.CurrentTerm, rf.role, server, votes, len(rf.peers))
+				util.Debug(util.DVote, "S%d T:%d R:%d <- S%d RVNG votes:%d all:%d", rf.me, rf.CurrentTerm, rf.role, server, votes, len(rf.peers))
 				// log.Printf("candid %d term %d: can't get vote from %d, all votes %d", rf.me, rf.CurrentTerm, server, votes)
 			}
 			rf.mu.Unlock()
@@ -867,7 +864,7 @@ func (rf *Raft) AttemptRequestVote(ch chan int) {
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	Debug(dVote, "S%d T:%d R:%d <- S%d vote req", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
+	util.Debug(util.DVote, "S%d T:%d R:%d <- S%d vote req", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
 
 	// if (rf.Log[rf.lastLogIndex].Term < args.LastLogTerm || (rf.Log[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex <= args.LastLogIndex)) &&
 	// 	args.Term > rf.CurrentTerm {
@@ -893,10 +890,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 	return
 	// }
 	if args.Term > rf.CurrentTerm {
-		Debug(dVote, "S%d T:%d R:%d -> S%d vote granted ", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
+		util.Debug(util.DVote, "S%d T:%d R:%d -> S%d vote granted ", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
 		// rf.convertToFollower(args.Term)
 		if rf.role != 0 {
-			Debug(dVote, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
+			util.Debug(util.DVote, "S%d T:%d R:%d -> S%d CToF", rf.me, rf.CurrentTerm, rf.role, rf.me)
 			rf.role = 0
 		}
 		rf.CurrentTerm = args.Term
@@ -909,7 +906,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.CurrentTerm == args.Term && (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) &&
 		(args.LastLogTerm > rf.Log[rf.lastLogIndex].Term ||
 			(args.LastLogTerm == rf.Log[rf.lastLogIndex].Term && args.LastLogIndex >= rf.lastLogIndex)) {
-		Debug(dVote, "S%d T:%d R:%d -> S%d vote for", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
+				util.Debug(util.DVote, "S%d T:%d R:%d -> S%d vote for", rf.me, rf.CurrentTerm, rf.role, args.CandidateId)
 		if rf.role == 0 {
 			clearChannel(rf.follower.recRV)
 			rf.follower.recRV <- 1
@@ -987,3 +984,30 @@ func clearChannel(ch chan int) {
 		<-ch
 	}
 }
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// if index > rf.lastLog().Index || index < rf.logEntries[0].Index || index > rf.commitIndex {
+	// 	return
+	// }
+	// //1.获取需要压缩末尾日志的数组内索引
+	// realIndex := rf.binaryFindRealIndexInArrayByIndex(index)
+	// lastLogEntry := rf.logEntries[realIndex]
+
+	// //2.清除log中[1,realIndex]之间的数据
+	// rf.logEntries = append(rf.logEntries[:1], rf.logEntries[realIndex+1:]...)
+	// //3.保存三项快照数据
+	// rf.snapshotData = snapshot
+	// //4.更改日志占位节点
+	// rf.logEntries[0].Index = lastLogEntry.Index
+	// rf.logEntries[0].Term = lastLogEntry.Term
+	// //5.持久化
+	// rf.persistStateAndSnapshot()
+}
+
