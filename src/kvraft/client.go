@@ -88,7 +88,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		// util.Debug(util.DClient, "S%d <- Client", serverId)
 		ok := ck.servers[serverId].Call("KVServer.PutAppend", &args, &reply)
 		// util.Debug(util.DClient, "S%d <- Client ok:%v err:%v", serverId, ok, reply.Err)
-		if !ok || reply.Err == ErrTimeout || reply.Err == ErrWrongLeader{
+		if !ok || reply.Err == ErrTimeout || reply.Err == ErrWrongLeader || reply.Err == ErrSituation{
 			serverId = (serverId + 1) % len(ck.servers)
 			continue
 		}

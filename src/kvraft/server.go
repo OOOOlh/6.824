@@ -107,15 +107,18 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	//all commited log will be send to applych 
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.toClientReply = make(map[int64]Commands)
 	kv.kvData = make(map[string]string)
 	kv.replyChMap =  make(map[int]chan ApplyNotifyMsg) 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	util.Debug(util.DServer, "S%d start", kv.me)
 	
+	kv.readSnapshot(kv.rf.GetSnapshot())
+	if kv.toClientReply == nil{
+		kv.toClientReply = make(map[int64]Commands)
+	}
+
 	go kv.ReceiveApplyMsg()
 
-	time.Sleep(300 * time.Millisecond)
 	return kv
 }
 
@@ -239,6 +242,7 @@ func (kv *KVServer) ReceiveApplyMsg() {
 			 util.Debug(util.DServer, "S%d rec applyMsg CI:%d CT:%d", kv.me, applyMsg.CommandIndex, applyMsg.CommandTerm)
 			 kv.ApplyCommand(applyMsg)
 		  } else if applyMsg.SnapshotValid {
+			 util.Debug(util.DServer, "S%d follower ApplySnapshot", kv.me)
 			 kv.ApplySnapshot(applyMsg)
 		  } else {
 			 util.Debug(util.DServer, "S%d rec applyMsg invalid %v", kv.me, applyMsg)
@@ -258,14 +262,14 @@ func (kv *KVServer) ReceiveApplyMsg() {
 	op := applyMsg.Command.(Op)
 	// util.Debug(util.DServer, "S%d OP:%v", kv.me, op)
 	cmdIndex := applyMsg.CommandIndex
-	//当命令已经被应用过了
+
+	//command has been applied
 	if commands, ok := kv.toClientReply[op.ClientId]; ok && commands.CommandId >= op.CommandId {
 		util.Debug(util.DServer, "S%d used cmd R:%v", kv.me, commonReply)
 		commonReply = commands.Reply
 	   return
 	}
 
-	//当命令未被应用过
 	if op.CommandType == "Get" {
 		if value, ok := kv.kvData[op.Key]; ok{
 			commonReply = ApplyNotifyMsg{OK, value, applyMsg.CommandTerm}
@@ -273,26 +277,13 @@ func (kv *KVServer) ReceiveApplyMsg() {
 			commonReply = ApplyNotifyMsg{ErrNoKey, value, applyMsg.CommandTerm}
 		}
 		util.Debug(util.DServer, "S%d get cmd apply R:%v", kv.me, commonReply)
-	//    //Get请求时
-	//    if value, ok := kv.storeInterface.Get(op.Key); ok {
-	// 	  //有该数据时
-	// 	  commonReply = ApplyNotifyMsg{OK, value, applyMsg.CommandTerm}
-	//    } else {
-	// 	  //当没有数据时
-	// 	  commonReply = ApplyNotifyMsg{ErrNoKey, value, applyMsg.CommandTerm}
-	//    }
+
 	} else if op.CommandType == "Put" {
-	//    //Put请求时
-	//    value := kv.storeInterface.Put(op.Key, op.Value)
-	//    commonReply = ApplyNotifyMsg{OK, value, applyMsg.CommandTerm}
 		kv.kvData[op.Key] = op.Value
 		commonReply = ApplyNotifyMsg{OK, op.Value, applyMsg.CommandTerm}
 		util.Debug(util.DServer, "S%d put cmd apply R:%v", kv.me, commonReply)
+		
 	} else if op.CommandType == "Append" {
-	//    //Append请求时
-	//    newValue := kv.storeInterface.Append(op.Key, op.Value)
-	//    commonReply = ApplyNotifyMsg{OK, newValue, applyMsg.CommandTerm}
-
 		if value, ok := kv.kvData[op.Key]; ok{
 			kv.kvData[op.Key] = value + op.Value
 		}else{
@@ -302,19 +293,22 @@ func (kv *KVServer) ReceiveApplyMsg() {
 		util.Debug(util.DServer, "S%d append cmd apply R:%v", kv.me, commonReply)
 	}
 
-	//reply to client
+	//reply to client. if server is follower, there are not kv.replyChMap
 	if replyCh, ok := kv.replyChMap[cmdIndex]; ok {
-		util.Debug(util.DServer, "S%d RTClient R:%v", kv.me, commonReply)
+		util.Debug(util.DServer, "S%d RToClient R:%v", kv.me, commonReply)
 	   replyCh <- commonReply
 	}
 
 	// value, _ := kv.storeInterface.Get(op.Key)
 	// DPrintf("kvserver[%d]: 此时key=[%v],value=[%v]\n", kv.me, op.Key, value)
 
+	//every server will store it
 	kv.toClientReply[op.ClientId] = Commands{op.CommandId, commonReply}
 	kv.lastApplied = applyMsg.CommandIndex
-	//判断是否需要快照
+	
+	//actively take snapshots
 	if kv.needSnapshot() {
+		util.Debug(util.DServer, "S%d need Snap", kv.me)
 	   kv.startSnapshot(applyMsg.CommandIndex)
 	}
  }
@@ -332,61 +326,56 @@ func (kv *KVServer) needSnapshot() bool {
 func (kv *KVServer) createSnapshot() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	//编码kv数据
 	err := e.Encode(kv.kvData)
 	if err != nil {
-	   log.Fatalf("kvserver[%d]: encode kvData error: %v\n", kv.me, err)
+		util.Debug(util.DServer, "S%d encode kvData error: %v", kv.me, err)
+	//    log.Fatalf("kvserver[%d]: encode kvData error: %v\n", kv.me, err)
 	}
-	//编码clientReply(为了去重)
+
 	err = e.Encode(kv.toClientReply)
 	if err != nil {
-	   log.Fatalf("kvserver[%d]: encode clientReply error: %v\n", kv.me, err)
+		util.Debug(util.DServer, "S%d encode clientReply error: %v", kv.me, err)
 	}
 	snapshotData := w.Bytes()
 	return snapshotData
  }
 
- //主动开始snapshot(由leader在maxRaftState不为-1,而且目前接近阈值的时候调用)
 func (kv *KVServer) startSnapshot(index int) {
-	DPrintf("kvserver[%d]: 容量接近阈值,进行快照,rateStateSize=[%d],maxRaftState=[%d]\n", kv.me, kv.rf.GetRaftStateSize(), kv.maxraftstate)
 	snapshot := kv.createSnapshot()
-	DPrintf("kvserver[%d]: 完成service层快照\n", kv.me)
-	//通知Raft进行快照
-	go kv.rf.Snapshot(index, snapshot)
+	go kv.rf.Actsnapshot(index, snapshot)
  }
 
- // ApplySnapshot 被动应用snapshot
+ // follower
 func (kv *KVServer) ApplySnapshot(msg raft.ApplyMsg) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	DPrintf("kvserver[%d]: 接收到leader的快照\n", kv.me)
-	// if msg.SnapshotIndex < kv.lastApplied {
-	//    DPrintf("kvserver[%d]: 接收到旧的日志,snapshotIndex=[%d],状态机的lastApplied=[%d]\n", kv.me, msg.SnapshotIndex, kv.lastApplied)
-	//    return
-	// }
-	// if kv.rf.CondInstallSnapshot(msg.SnapshotTerm, msg.SnapshotIndex, msg.Snapshot) {
-	//    kv.lastApplied = msg.SnapshotIndex
-	//    //将快照中的service层数据进行加载
-	//    kv.readSnapshot(msg.Snapshot)
-	//    DPrintf("kvserver[%d]: 完成service层快照\n", kv.me)
-	// }
+
+	if msg.SnapshotIndex < kv.lastApplied {
+	   return
+	}
+
+	if kv.rf.CondInstallSnapshot(msg.SnapshotTerm, msg.SnapshotIndex, msg.Snapshot) {
+	   util.Debug(util.DServer, "S%d Follower Snap", kv.me)
+	   kv.lastApplied = msg.SnapshotIndex
+	   kv.readSnapshot(msg.Snapshot)
+	}
  }
 
  func (kv *KVServer) readSnapshot(snapshot []byte) {
 	if snapshot == nil || len(snapshot) < 1 {
 	   return
 	}
-	// r := bytes.NewBuffer(snapshot)
-	// d := labgob.NewDecoder(r)
-	// var kvDataBase KvDataBase
-	// var clientReply map[int64]Commands
-	// if d.Decode(&kvDataBase) != nil || d.Decode(&clientReply) != nil {
-	//    DPrintf("kvserver[%d]: decode error\n", kv.me)
-	// } else {
-	//    kv.kvDataBase = kvDataBase
-	//    kv.clientReply = clientReply
-	//    kv.storeInterface = &kvDataBase
-	// }
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	var clientReply map[int64]Commands
+	var kvData map[string]string
+	if d.Decode(&kvData) != nil || d.Decode(&clientReply) != nil {
+		util.Debug(util.DServer, "S%d decode error", kv.me)
+	} else {
+		kv.kvData = kvData
+		kv.toClientReply = clientReply
+	}
  }
  
  

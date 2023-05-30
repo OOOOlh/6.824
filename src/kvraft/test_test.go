@@ -706,6 +706,7 @@ func TestSnapshotSize3B(t *testing.T) {
 	cfg.end()
 }
 
+
 func TestSnapshotRecover3B(t *testing.T) {
 	// Test: restarts, snapshots, one client (3B) ...
 	GenericTest(t, "3B", 1, false, true, false, 1000)
